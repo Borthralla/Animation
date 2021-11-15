@@ -277,7 +277,6 @@ int main(int argc, char** argv)
     /* encode 1 second of video */
     for (i = 0; i < 3000; i++) {
         fflush(stdout);
-        printf("Start writing frame %d\n", i);
 
         /* Make sure the frame data is writable.
            On the first round, the frame is fresh from av_frame_get_buffer()
@@ -289,15 +288,9 @@ int main(int argc, char** argv)
            av_frame_make_writable() checks that and allocates a new buffer
            for the frame only if necessary.
          */
-        printf("About to make writable\n");
         ret = av_frame_make_writable(frame);
-        printf("Done writing with ret %d. %d\n", ret, ret < 0);
         if (ret < 0) {
-            printf("ret was negative");
             exit(1);
-        }
-        if (i == 139) {
-            printf("Lets fucking go beyotch");
         }
         prepare_frame(i, frame);
 
