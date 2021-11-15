@@ -35,6 +35,101 @@
 
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
+#include <math.h>
+#define M_1_PI 0.318309886183790671538
+
+struct Complex {
+    double re;
+    double im;
+};
+
+double complex_len(struct Complex c) {
+    return sqrt(c.re * c.re + c.im * c.im);
+}
+
+double complex_arg(struct Complex c) {
+    double theta = atan2(c.im, c.re);
+    return theta < 0 ? theta + 2.0 * M_PI : theta;
+}
+
+struct Complex from_polar(double len, double arg) {
+    struct Complex c = { len * cos(arg), len * sin(arg) };
+    return c;
+}
+
+struct Complex complex_add(struct Complex a, struct Complex b) {
+    struct Complex sum = { a.re + b.re, a.im + b.im };
+    return sum;
+}
+
+struct Complex complex_sub(struct Complex a, struct Complex b) {
+    struct Complex sum = { a.re - b.re, a.im - b.im };
+    return sum;
+}
+
+struct Complex complex_mul(struct Complex a, struct Complex b) {
+    struct Complex product = { a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re };
+    return product;
+}
+
+struct Complex complex_div(struct Complex a, struct Complex b) {
+    double m = b.re * b.re + b.im * b.im;
+    struct Complex div = {(a.re * b.re + a.im * b.im)/m, (a.im * b.re - a.re * b.im)/m};
+    return div;
+}
+
+struct Complex complex_pow(struct Complex a, double b) {
+    return from_polar(pow(complex_len(a), b), complex_arg(a) * b);
+}
+
+struct Complex complex_exp(struct Complex c) {
+    return from_polar(exp(c.re), c.im);
+}
+
+struct rgb {
+    uint8_t r;
+    uint8_t b;
+    uint8_t g;
+};
+
+struct rgb color(struct Complex c) {
+    double hs = (complex_arg(c) * 3.0 * M_1_PI);
+    double x = 1 - fabs(fmod(hs, 2.0) - 1);
+    struct rgb result;
+    switch ((int)hs) {
+    case 0:
+        result.r = 255;
+        result.g = 255 * x;
+        result.b = 0;
+        return result;
+    case 1:
+        result.r = 255 * x;
+        result.g = 255;
+        result.b = 0;
+        return result;
+    case 2:
+        result.r = 0;
+        result.g = 255;
+        result.b = 255 * x;
+        return result;
+    case 3:
+        result.r = 0;
+        result.g = 255 * x;
+        result.b = 255;
+        return result;
+    case 4:
+        result.r = 255 * x;
+        result.g = 0;
+        result.b = 255;
+        return result;
+    case 5:
+        result.r = 255;
+        result.g = 0;
+        result.b = 255 * x;
+        return result;
+    }
+}
+
 
 static void encode(AVCodecContext* enc_ctx, AVFrame* frame, AVPacket* pkt,
     FILE* outfile)
@@ -63,6 +158,34 @@ static void encode(AVCodecContext* enc_ctx, AVFrame* frame, AVPacket* pkt,
         printf("Write packet %3"PRId64" (size=%5d)\n", pkt->pts, pkt->size);
         fwrite(pkt->data, 1, pkt->size, outfile);
         av_packet_unref(pkt);
+    }
+}
+
+struct rgb get_color(int x, int y, int i) {
+    struct rgb res = { 255, 0 ,i };
+    return res;
+}
+
+void prepare_frame(int i, AVFrame* frame) {
+    double scaling_factor = 1.0 / 100;
+    double start_re = -1 * (long long)(frame->width) / 2.0;
+    double start_im = -1 * (long long)(frame->height) / 2.0;
+    //struct Complex factor = from_polar(1.0, 0.1 * i);
+    struct Complex c1 = { -2, -1 };
+    struct Complex c2 = { 2, 2};
+    struct Complex c3 = { 1, 0 };
+    for (int x = 0; x < frame->width; x++) {
+        for (int y = 0; y < frame->height; y++) {
+            struct Complex in = { (start_re + x) * scaling_factor, (start_im +frame->height - y) * scaling_factor };
+            struct Complex z_2 = complex_mul(in, in);
+            struct Complex out = complex_mul(complex_sub(z_2, c3), complex_pow(complex_add(in, c1), 2.0 * .005 * i));
+            out = complex_div(out, complex_add(z_2, c2));
+            struct rgb c = color(out);
+            int start = frame->linesize[0] * y + x * 4;
+            frame->data[0][start] = c.r;
+            frame->data[0][start + 1] = c.g;
+            frame->data[0][start + 2] = c.b;
+        }
     }
 }
 
@@ -102,13 +225,13 @@ int main(int argc, char** argv)
         exit(1);
 
     /* put sample parameters */
-    c->bit_rate = 400000;
+    c->bit_rate = 12000000;
     /* resolution must be a multiple of two */
-    c->width = 352;
-    c->height = 288;
+    c->width = 1920;
+    c->height = 1080;
     /* frames per second */
-    c->time_base = (AVRational){ 1, 25 };
-    c->framerate = (AVRational){ 25, 1 };
+    c->time_base = (AVRational){ 1, 60 };
+    c->framerate = (AVRational){ 60, 1 };
 
     /* emit one intra frame every ten frames
      * check frame pict_type before passing frame
@@ -116,9 +239,9 @@ int main(int argc, char** argv)
      * then gop_size is ignored and the output of encoder
      * will always be I frame irrespective to gop_size
      */
-    c->gop_size = 10;
-    c->max_b_frames = 1;
-    c->pix_fmt = AV_PIX_FMT_YUV420P;
+    c->gop_size = 30;
+    //c->max_b_frames = 2;
+    c->pix_fmt = AV_PIX_FMT_RGB0;
 
     if (codec->id == AV_CODEC_ID_H264)
         av_opt_set(c->priv_data, "preset", "slow", 0);
@@ -152,8 +275,9 @@ int main(int argc, char** argv)
     }
 
     /* encode 1 second of video */
-    for (i = 0; i < 25; i++) {
+    for (i = 0; i < 3000; i++) {
         fflush(stdout);
+        printf("Start writing frame %d\n", i);
 
         /* Make sure the frame data is writable.
            On the first round, the frame is fresh from av_frame_get_buffer()
@@ -165,33 +289,22 @@ int main(int argc, char** argv)
            av_frame_make_writable() checks that and allocates a new buffer
            for the frame only if necessary.
          */
+        printf("About to make writable\n");
         ret = av_frame_make_writable(frame);
-        if (ret < 0)
+        printf("Done writing with ret %d. %d\n", ret, ret < 0);
+        if (ret < 0) {
+            printf("ret was negative");
             exit(1);
-
-        /* Prepare a dummy image.
-           In real code, this is where you would have your own logic for
-           filling the frame. FFmpeg does not care what you put in the
-           frame.
-         */
-         /* Y */
-        for (y = 0; y < c->height; y++) {
-            for (x = 0; x < c->width; x++) {
-                frame->data[0][y * frame->linesize[0] + x] = x + y + i * 3;
-            }
         }
-
-        /* Cb and Cr */
-        for (y = 0; y < c->height / 2; y++) {
-            for (x = 0; x < c->width / 2; x++) {
-                frame->data[1][y * frame->linesize[1] + x] = 128 + y + i * 2;
-                frame->data[2][y * frame->linesize[2] + x] = 64 + x + i * 5;
-            }
+        if (i == 139) {
+            printf("Lets fucking go beyotch");
         }
+        prepare_frame(i, frame);
 
         frame->pts = i;
 
         /* encode the image */
+        printf("Encoding frame %d\n", i);
         encode(c, frame, pkt, f);
     }
 
