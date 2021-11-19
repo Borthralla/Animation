@@ -36,7 +36,11 @@
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
 #include <math.h>
-#define M_1_PI 0.318309886183790671538
+#include <process.h>
+#include <windows.h>
+
+#define M_3_PI 0.954929658551372014613
+#define NUM_THREADS 12
 
 struct Complex {
     double re;
@@ -93,7 +97,7 @@ struct rgb {
 };
 
 struct rgb color(struct Complex c) {
-    double hs = (complex_arg(c) * 3.0 * M_1_PI);
+    double hs = (complex_arg(c) * M_3_PI);
     double x = 1 - fabs(fmod(hs, 2.0) - 1);
     struct rgb result;
     switch ((int)hs) {
@@ -126,6 +130,11 @@ struct rgb color(struct Complex c) {
         result.r = 255;
         result.g = 0;
         result.b = 255 * x;
+        return result;
+    case 6:
+        result.r = 255;
+        result.g = 0;
+        result.b = 0;
         return result;
     }
 }
@@ -166,13 +175,60 @@ struct rgb get_color(int x, int y, int i) {
     return res;
 }
 
-void prepare_frame(int i, AVFrame* frame) {
-    double scaling_factor = 1.0 / 100;
+struct RenderThreadParams {
+    int id; // id of the thread
+    int i; // frame number
+    AVFrame* frame; // AVFrame for pixel date to be written to
+};
+
+void prepare_frame_thread(void* params) {
+    struct RenderThreadParams* p = params;
+    AVFrame* frame = p->frame;
+    double scaling_factor = 1.0 / 130;
     double start_re = -1 * (long long)(frame->width) / 2.0;
     double start_im = -1 * (long long)(frame->height) / 2.0;
     //struct Complex factor = from_polar(1.0, 0.1 * i);
     struct Complex c1 = { -2, -1 };
-    struct Complex c2 = { 2, 2};
+    struct Complex c2 = { 2, 2 };
+    struct Complex c3 = { 1, 0 };
+    for (int y = p->id; y < frame->height; y += NUM_THREADS) {
+        for (int x = 0; x < frame->width; x++) {
+            struct Complex in = { (start_re + x) * scaling_factor, (start_im + frame->height - y) * scaling_factor };
+            struct Complex z_2 = complex_mul(in, in);
+            struct Complex out = complex_mul(complex_sub(z_2, c3), complex_pow(complex_add(in, c1), 2.0 * .005 * p->i));
+            out = complex_div(out, complex_add(z_2, c2));
+            struct rgb c = color(out);
+            int start = frame->linesize[0] * y + x * 4;
+            frame->data[0][start] = c.r;
+            frame->data[0][start + 1] = c.g;
+            frame->data[0][start + 2] = c.b;
+        }
+    }
+}
+
+
+
+void prepare_frame_multithreaded(int i, AVFrame* frame) {
+    HANDLE threads[NUM_THREADS];
+    struct RenderThreadParams* params = malloc(NUM_THREADS * sizeof(struct RenderThreadParams));
+    if (!params) {
+        exit(1);
+    }
+    for (int t = 0; t < NUM_THREADS; t++) {
+        params[t] = (struct RenderThreadParams){ t, i, frame };
+        threads[t] = _beginthread(prepare_frame_thread, 0, params + t);
+    }
+    WaitForMultipleObjects(NUM_THREADS, threads, TRUE, INFINITE);
+    free(params);
+}
+
+void prepare_frame(int i, AVFrame* frame) {
+    double scaling_factor = 1.0 / 130;
+    double start_re = -1 * (long long)(frame->width) / 2.0;
+    double start_im = -1 * (long long)(frame->height) / 2.0;
+    //struct Complex factor = from_polar(1.0, 0.1 * i);
+    struct Complex c1 = { -2, -1};
+    struct Complex c2 = { 2, 2 };
     struct Complex c3 = { 1, 0 };
     for (int x = 0; x < frame->width; x++) {
         for (int y = 0; y < frame->height; y++) {
@@ -225,10 +281,10 @@ int main(int argc, char** argv)
         exit(1);
 
     /* put sample parameters */
-    c->bit_rate = 12000000;
+    c->bit_rate = 24000000;
     /* resolution must be a multiple of two */
-    c->width = 1920;
-    c->height = 1080;
+    c->width = 2560;
+    c->height = 1440;
     /* frames per second */
     c->time_base = (AVRational){ 1, 60 };
     c->framerate = (AVRational){ 60, 1 };
@@ -292,7 +348,7 @@ int main(int argc, char** argv)
         if (ret < 0) {
             exit(1);
         }
-        prepare_frame(i, frame);
+        prepare_frame_multithreaded(i, frame);
 
         frame->pts = i;
 
